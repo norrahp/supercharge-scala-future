@@ -131,8 +131,14 @@ trait IO[A] {
 
   // Runs both the current IO and `other` concurrently,
   // then combine their results into a tuple
-  def parZip[Other](other: IO[Other])(ec: ExecutionContext): IO[(A, Other)] =
-    ???
+  def parZip[Other](other: IO[Other])(implicit ec: ExecutionContext): IO[(A, Other)] = {
+    IO {
+      val f1 = Future(this.unsafeRun())(ec)
+      val f2 = Future(other.unsafeRun())(ec)
+
+      Await.result(f1.zip(f2), Duration.Inf)
+    }
+  }
 
 }
 
@@ -171,10 +177,7 @@ object IO {
   // List(User(1111, ...), User(2222, ...), User(3333, ...))
   def sequence[A](actions: List[IO[A]]): IO[List[A]] =
     actions.foldLeft(IO(List.empty[A]))((state, action) =>
-        for {
-          result1 <- state
-          result2 <- action
-        } yield result2 :: result1
+        state.zip(action).map { case (result1, result2) => result2 :: result1}
     ).map(_.reverse)
 
   // `traverse` is a shortcut for `map` followed by `sequence`, similar to how
@@ -199,7 +202,9 @@ object IO {
   // List(User(1111, ...), User(2222, ...), User(3333, ...))
   // Note: You may want to use `parZip` to implement `parSequence`.
   def parSequence[A](actions: List[IO[A]])(ec: ExecutionContext): IO[List[A]] =
-    ???
+    actions.foldLeft(IO(List.empty[A]))((state, action) =>
+      state.parZip(action)(ec).map { case (result1, result2) => result2 :: result1}
+    ).map(_.reverse)
 
   // `parTraverse` is a shortcut for `map` followed by `parSequence`, similar to how
   // `flatMap`     is a shortcut for `map` followed by `flatten`

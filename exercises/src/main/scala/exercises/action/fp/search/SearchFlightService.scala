@@ -23,18 +23,15 @@ object SearchFlightService {
   // (see `SearchResult` companion object).
   // Note: A example based test is defined in `SearchFlightServiceTest`.
   //       You can also defined tests for `SearchResult` in `SearchResultTest`
-  def fromTwoClients(client1: SearchFlightClient, client2: SearchFlightClient): SearchFlightService =
+  def fromTwoClients(client1: SearchFlightClient, client2: SearchFlightClient)(ec: ExecutionContext): SearchFlightService =
     new SearchFlightService {
       def search(from: Airport, to: Airport, date: LocalDate): IO[SearchResult] = {
         def searchByClient(client: SearchFlightClient): IO[List[Flight]] =
           client.search(from, to, date).handleErrorWith(e => IO.debug(s"Oops an error occured: ${e}") andThen IO(Nil))
 
-        for {
-          flights1 <- searchByClient(client1)
-          flights2 <- searchByClient(client2)
-        } yield {
-          SearchResult(flights1 ++ flights2)
-        }
+        searchByClient(client1)
+          .parZip(searchByClient(client2))(ec)
+          .map{case (flights1, flights2) => SearchResult(flights1 ++ flights2)}
       }
     }
 
@@ -52,7 +49,7 @@ object SearchFlightService {
   // a list of `SearchFlightClient`.
   // Note: You can use a recursion/loop/foldLeft to call all the clients and combine their results.
   // Note: We can assume `clients` to contain less than 100 elements.
-  def fromClients(clients: List[SearchFlightClient]): SearchFlightService =
+  def fromClients(clients: List[SearchFlightClient])(ec: ExecutionContext): SearchFlightService =
     new SearchFlightService {
       def search(from: Airport, to: Airport, date: LocalDate): IO[SearchResult] = {
         def searchByClient(client: SearchFlightClient): IO[List[Flight]] =
@@ -64,7 +61,7 @@ object SearchFlightService {
         // map + fold == foldMap
         // map + sequence == traverse
         clients
-          .traverse(searchByClient)
+          .parTraverse(searchByClient)(ec)
           .map(_.flatten)
           .map(SearchResult(_))
       }
