@@ -8,9 +8,23 @@ import scala.util.{Failure, Success, Try}
 
 trait IO[A] {
 
-  // Executes the action.
   // This is the ONLY abstract method of the `IO` trait.
-  def unsafeRun(): A
+  def unsafeRunAsync(callback: Try[A] => Unit): Unit
+
+  // Executes the action.
+  def unsafeRun(): A = {
+    var result: Option[Try[A]] = None
+
+    val latch = new CountDownLatch(1)
+    unsafeRunAsync { tryA =>
+      result = Some(tryA)
+      latch.countDown() // release the latch
+    }
+
+    latch.await() // blocks
+
+    result.get.get
+  }
 
   // Runs the current IO (`this`), discards its result and runs the second IO (`other`).
   // For example,
@@ -52,10 +66,12 @@ trait IO[A] {
   // action.unsafeRun()
   // Fetches the user with id 1234 from the database and send them an email using the email
   // address found in the database.
-  def flatMap[Next](callback: A => IO[Next]): IO[Next] =
-    IO {
-      val result: A = this.unsafeRun()
-      callback(result).unsafeRun()
+  def flatMap[Next](next: A => IO[Next]): IO[Next] =
+    IO.async { callback =>
+      unsafeRunAsync{
+        case Failure(ex)    => callback(Failure(ex))
+        case Success(value) => next(value).unsafeRunAsync(callback)
+      }
     }
 
   // Runs the current action, if it fails it executes `cleanup` and rethrows the original error.
@@ -114,7 +130,7 @@ trait IO[A] {
   def handleErrorWith(callback: Throwable => IO[A]): IO[A] =
     attempt.flatMap {
       case Success(value) => IO(value)
-      case Failure(e)     => callback(e)
+      case Failure(e) => callback(e)
     }
 
   //////////////////////////////////////////////
@@ -125,31 +141,50 @@ trait IO[A] {
   // then combine their results into a tuple
   def zip[Other](other: IO[Other]): IO[(A, Other)] =
     for {
-      first  <- this
+      first <- this
       second <- other
     } yield (first, second)
 
   // Runs both the current IO and `other` concurrently,
   // then combine their results into a tuple
   def parZip[Other](other: IO[Other])(implicit ec: ExecutionContext): IO[(A, Other)] = {
-    IO {
-      val f1 = Future(this.unsafeRun())(ec)
-      val f2 = Future(other.unsafeRun())(ec)
+    IO.async { callback =>
+      val promise1: Promise[A] = Promise() // var promise1: A = null
+      val promise2: Promise[Other] = Promise() // var promise2: Other = null
 
-      Await.result(f1.zip(f2), Duration.Inf)
+      ec.execute(() => this.unsafeRunAsync(promise1.complete))
+      ec.execute(() => other.unsafeRunAsync(promise2.complete))
+
+      val zipped: Future[(A, Other)] = promise1.future.zip(promise2.future)
+
+      zipped.onComplete(callback)
     }
   }
 
 }
 
 object IO {
+
+  def async[A](onComplete: (Try[A] => Unit) => Unit): IO[A] =
+    new IO[A] {
+      override def unsafeRunAsync(callback: Try[A] => Unit): Unit =
+        onComplete(callback)
+    }
+
+
   // Constructor for IO. For example,
   // val greeting: IO[Unit] = IO { println("Hello") }
   // greeting.unsafeRun()
   // prints "Hello"
   def apply[A](action: => A): IO[A] =
-    new IO[A] {
-      def unsafeRun(): A = action
+    async { callback =>
+      println("**")
+      callback(Try(action))
+    }
+
+  def dispatch[A](action: => A)(ec: ExecutionContext): IO[A] =
+    async { callback =>
+      ec.execute(() => callback(Try(action)))
     }
 
   // Construct an IO which throws `error` everytime it is called.
@@ -177,7 +212,7 @@ object IO {
   // List(User(1111, ...), User(2222, ...), User(3333, ...))
   def sequence[A](actions: List[IO[A]]): IO[List[A]] =
     actions.foldLeft(IO(List.empty[A]))((state, action) =>
-        state.zip(action).map { case (result1, result2) => result2 :: result1}
+      state.zip(action).map { case (result1, result2) => result2 :: result1 }
     ).map(_.reverse)
 
   // `traverse` is a shortcut for `map` followed by `sequence`, similar to how
@@ -203,7 +238,7 @@ object IO {
   // Note: You may want to use `parZip` to implement `parSequence`.
   def parSequence[A](actions: List[IO[A]])(ec: ExecutionContext): IO[List[A]] =
     actions.foldLeft(IO(List.empty[A]))((state, action) =>
-      state.parZip(action)(ec).map { case (result1, result2) => result2 :: result1}
+      state.parZip(action)(ec).map { case (result1, result2) => result2 :: result1 }
     ).map(_.reverse)
 
   // `parTraverse` is a shortcut for `map` followed by `parSequence`, similar to how

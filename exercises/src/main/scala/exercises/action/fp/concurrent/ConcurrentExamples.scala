@@ -10,7 +10,7 @@ import scala.concurrent.duration._
 // exercises/runMain exercises.action.fp.ConcurrentExamples
 object ConcurrentExamples extends App {
 
-  val ec = ThreadPoolUtil.fixedSizeExecutionContext(8, "pool")
+  val ec = ThreadPoolUtil.fixedSizeExecutionContext(4, "pool")
 
   val streamA = stream("A", 2, 1000.millis)
   val streamB = stream("B", 5, 500.millis)
@@ -18,10 +18,11 @@ object ConcurrentExamples extends App {
   val streamD = stream("D", 10, 200.millis)
   val streamE = stream("E", 15, 100.millis)
   val streamF = stream("F", 20, 50.millis)
+  val streamG = stream("F", 21, 50.millis)
 
   val seqTwo       = streamA.zip(streamB)
   val parTwo       = streamA.parZip(streamB)(ec)
-  lazy val parMany = List(streamA, streamB, streamC, streamD, streamE, streamF).parSequence(ec)
+  lazy val parMany = List(streamA, streamB, streamC, streamD, streamE, streamF, streamG).parSequence(ec)
 
   parMany.unsafeRun()
 
